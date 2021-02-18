@@ -193,10 +193,14 @@ type Schema struct {
 	// the keys in that list must be specified.
 	//
 	// RequiredWith is a set of schema keys that must be set simultaneously.
-	ConflictsWith []string
-	ExactlyOneOf  []string
-	AtLeastOneOf  []string
-	RequiredWith  []string
+	//
+	// OptionalExactlyOneOf is a set of schema keys that if (as being optional)
+	// it is defined it needs to have only one instance
+	ConflictsWith        []string
+	ExactlyOneOf         []string
+	AtLeastOneOf         []string
+	RequiredWith         []string
+	OptionalExactlyOneOf []string
 
 	// When Deprecated is set, this attribute is deprecated.
 	//
@@ -722,6 +726,10 @@ func (m schemaMap) internalValidate(topSchemaMap schemaMap, attrsOnly bool) erro
 			return fmt.Errorf("%s: ExactlyOneOf cannot be set with Required", k)
 		}
 
+		if len(v.OptionalExactlyOneOf) > 0 && v.Required {
+			return fmt.Errorf("%s: OptionalExactlyOneOf cannot be set with Required", k)
+		}
+
 		if len(v.AtLeastOneOf) > 0 && v.Required {
 			return fmt.Errorf("%s: AtLeastOneOf cannot be set with Required", k)
 		}
@@ -751,6 +759,13 @@ func (m schemaMap) internalValidate(topSchemaMap schemaMap, attrsOnly bool) erro
 			err := checkKeysAgainstSchemaFlags(k, v.AtLeastOneOf, topSchemaMap, v, true)
 			if err != nil {
 				return fmt.Errorf("AtLeastOneOf: %+v", err)
+			}
+		}
+
+		if len(v.OptionalExactlyOneOf) > 0 {
+			err := checkKeysAgainstSchemaFlags(k, v.OptionalExactlyOneOf, topSchemaMap, v, true)
+			if err != nil {
+				return fmt.Errorf("OptionalExactlyOneOf: %+v", err)
 			}
 		}
 
@@ -1469,6 +1484,16 @@ func (m schemaMap) validate(
 		})
 	}
 
+	err = validateOptionalExactlyOneAttribute(k, schema, c)
+	if err != nil {
+		return append(diags, diag.Diagnostic{
+			Severity:      diag.Error,
+			Summary:       "OptionalExactlyOne",
+			Detail:        err.Error(),
+			AttributePath: path,
+		})
+	}
+
 	if !ok {
 		if schema.Required {
 			return append(diags, diag.Diagnostic{
@@ -1643,6 +1668,43 @@ func validateExactlyOneAttribute(
 
 	if len(specified) > 1 {
 		return fmt.Errorf("%q: only one of `%s` can be specified, but `%s` were specified.", k, strings.Join(allKeys, ","), strings.Join(specified, ","))
+	}
+
+	return nil
+}
+
+func validateOptionalExactlyOneAttribute(
+	k string,
+	schema *Schema,
+	c *terraform.ResourceConfig) error {
+
+	if len(schema.OptionalExactlyOneOf) == 0 {
+		return nil
+	}
+
+	allKeys := removeDuplicates(append(schema.OptionalExactlyOneOf, k))
+	sort.Strings(allKeys)
+	specified := make([]string, 0)
+	unknownVariableValueCount := 0
+	for _, optionalExactlyOneOfKey := range allKeys {
+		if c.IsComputed(optionalExactlyOneOfKey) {
+			unknownVariableValueCount++
+			continue
+		}
+
+		_, ok := c.Get(optionalExactlyOneOfKey)
+		if ok {
+			specified = append(specified, optionalExactlyOneOfKey)
+		}
+	}
+
+	if len(specified) == 0 && unknownVariableValueCount == 0 {
+		// This will make sure attribute can be optional
+		return nil
+	}
+
+	if len(specified) > 1 {
+		return fmt.Errorf("%q is in use: only one of `%s` can be specified, but `%s` were specified.", k, strings.Join(allKeys, ","), strings.Join(specified, ","))
 	}
 
 	return nil
